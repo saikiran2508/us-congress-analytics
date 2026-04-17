@@ -1,19 +1,43 @@
+## @package ingestion.bioguide_members
+#  Scrapes US Congressional biographical data from bioguide.congress.gov.
+#
+#  Uses Playwright (a real browser) to bypass Cloudflare bot detection on the
+#  Bioguide website. Fetches JSON records for each representative identified
+#  by a bioguide ID (e.g. "L000603") and writes the parsed records to a
+#  DynamoDB table.
+#
+#  Key data structures:
+#    - bioguideId: str  - unique identifier e.g. "A000001"
+#    - record:     dict - parsed representative record with name, terms, image
+#    - term:       dict - one congress term with chamber, party, state, dates
+#
+#  Usage:
+#    python bioguide_members.py --letters A-Z --table Reps --region us-east-2
+
 import argparse
 import json
 import random
 import time
 import re
 import datetime as dt
-import boto3
 from decimal import Decimal
+from typing import Optional
+
+import boto3
 from playwright.sync_api import sync_playwright
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Config
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+
+## Base URL for individual bioguide JSON records.
 BASE = "https://bioguide.congress.gov/search/bio"
+
+## Home URL used for browser warmup to obtain session cookies.
 HOME = "https://bioguide.congress.gov/search"
 
+# Resolve Eastern Time zone — tries zoneinfo (Python 3.9+), then dateutil,
+# then falls back to a fixed UTC-5 offset.
 try:
     from zoneinfo import ZoneInfo
     ET_TZ = ZoneInfo("America/New_York")
@@ -25,24 +49,50 @@ except Exception:
         ET_TZ = dt.timezone(dt.timedelta(hours=-5))
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Utilities
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
+## Returns the current Eastern Time as a formatted string.
+#
+#  @return str - formatted datetime string e.g. "2024-01-15 - 10:30:00 ET"
 def now_et_string() -> str:
     d = dt.datetime.now(ET_TZ)
     return f"{d:%Y-%m-%d} - {d:%H:%M:%S} ET"
 
 
+## Constructs a bioguide ID from a letter prefix and sequential number.
+#
+#  Bioguide IDs follow the format "L000603" — one uppercase letter followed
+#  by a zero-padded 6-digit number.
+#
+#  @param letter  str - single uppercase letter prefix (e.g. "L")
+#  @param n       int - sequential number (e.g. 603)
+#  @return        str - formatted bioguide ID (e.g. "L000603")
 def bid(letter: str, n: int) -> str:
     return f"{letter}{n:06d}"
 
 
-def jsleep(a, b):
+## Sleeps for a random duration between a and b seconds.
+#
+#  Used to add human-like delays between browser requests to avoid
+#  triggering rate limiting or bot detection on the Bioguide website.
+#
+#  @param a  float - minimum sleep duration in seconds
+#  @param b  float - maximum sleep duration in seconds
+def jsleep(a: float, b: float) -> None:
     time.sleep(random.uniform(a, b))
 
 
-def to_dynamo(item):
+## Recursively converts Python floats to Decimal for DynamoDB compatibility.
+#
+#  DynamoDB does not accept Python float values — they must be converted to
+#  Decimal before writing. This function walks the entire data structure and
+#  converts every float it finds.
+#
+#  @param item  any - dict, list, float, or any other Python value
+#  @return      any - same structure with all floats replaced by Decimal
+def to_dynamo(item: any) -> any:
     if isinstance(item, dict):
         return {k: to_dynamo(v) for k, v in item.items()}
     if isinstance(item, list):
@@ -52,20 +102,33 @@ def to_dynamo(item):
     return item
 
 
-# ─────────────────────────────────────────────
-# Playwright fetch — bypasses Cloudflare
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Playwright fetch
+# ---------------------------------------------------------------------------
 
-def fetch_bioguide(page, b: str, retries: int = 3, timeout: int = 30000):
-    """
-    Fetch bioguide JSON using a real browser (Playwright).
-    Bypasses Cloudflare bot detection.
-    """
+## Fetches a bioguide JSON record using a real browser to bypass Cloudflare.
+#
+#  Attempts to load the JSON endpoint for the given bioguide ID up to
+#  `retries` times. Handles HTTP 403 (Cloudflare challenge) by visiting the
+#  home page to warm up cookies, and HTTP 429 (rate limit) by waiting 30s.
+#
+#  @param page     Playwright Page - active browser page instance
+#  @param b        str             - bioguide ID to fetch (e.g. "L000603")
+#  @param retries  int             - maximum number of retry attempts (default 3)
+#  @param timeout  int             - page load timeout in milliseconds (default 30000)
+#  @return         tuple           - ("ok", data_dict) on success,
+#                                    ("notfound", None) for HTTP 404,
+#                                    ("error", None) on failure
+def fetch_bioguide(
+    page: any,
+    b: str,
+    retries: int = 3,
+    timeout: int = 30000
+) -> tuple:
     url = f"{BASE}/{b}.json"
 
     for attempt in range(retries):
         try:
-            # Navigate to the JSON endpoint
             response = page.goto(url, timeout=timeout, wait_until="domcontentloaded")
 
             if response is None:
@@ -75,9 +138,8 @@ def fetch_bioguide(page, b: str, retries: int = 3, timeout: int = 30000):
             status = response.status
 
             if status == 200:
-                # Get page content and parse JSON
+                # Attempt to extract JSON from page content
                 content = page.content()
-                # Extract JSON from the page body
                 match = re.search(r'\{.*\}', content, re.DOTALL)
                 if match:
                     try:
@@ -86,7 +148,7 @@ def fetch_bioguide(page, b: str, retries: int = 3, timeout: int = 30000):
                             return ("ok", data)
                     except json.JSONDecodeError:
                         pass
-                # Try getting raw text directly
+                # Fallback: read raw text directly from the DOM
                 try:
                     raw = page.evaluate("() => document.body.innerText")
                     data = json.loads(raw)
@@ -100,9 +162,8 @@ def fetch_bioguide(page, b: str, retries: int = 3, timeout: int = 30000):
                 return ("notfound", None)
 
             elif status == 403:
-                # Cloudflare challenge — wait and retry
-                print(f"  [{b}] 403 on attempt {attempt+1}, waiting...")
-                # Visit home page first to warm up cookies
+                # Cloudflare challenge - warm up cookies and retry
+                print(f"  [{b}] 403 on attempt {attempt + 1}, waiting...")
                 page.goto(HOME, timeout=30000, wait_until="domcontentloaded")
                 jsleep(3, 6)
                 continue
@@ -117,17 +178,21 @@ def fetch_bioguide(page, b: str, retries: int = 3, timeout: int = 30000):
                 continue
 
         except Exception as e:
-            print(f"  [{b}] error attempt {attempt+1}: {e}")
+            print(f"  [{b}] error attempt {attempt + 1}: {e}")
             jsleep(2, 4)
 
     return ("error", None)
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Parsers
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
-def chamber_from_job(name: str | None):
+## Extracts a canonical chamber name from a job position title.
+#
+#  @param name  Optional[str] - job title string from the Bioguide API
+#  @return      Optional[str] - "Senate", "House", original name, or None
+def chamber_from_job(name: Optional[str]) -> Optional[str]:
     if not name:
         return None
     n = name.lower()
@@ -138,7 +203,14 @@ def chamber_from_job(name: str | None):
     return name
 
 
-def party_from_affils(ca: dict) -> str | None:
+## Extracts the party name from a congress affiliation dict.
+#
+#  Tries partyAffiliation first, then falls back to caucusAffiliation.
+#  Handles both list and dict formats found in different API record versions.
+#
+#  @param ca  dict - congressAffiliation dict from the Bioguide API
+#  @return    Optional[str] - party name string, or None if not found
+def party_from_affils(ca: dict) -> Optional[str]:
     pa = ca.get("partyAffiliation")
     if isinstance(pa, list) and pa:
         p = ((pa[0] or {}).get("party") or {}).get("name")
@@ -160,6 +232,15 @@ def party_from_affils(ca: dict) -> str | None:
     return None
 
 
+## Parses all congressional terms from a representative's job positions.
+#
+#  Walks the jobPositions array in the Bioguide data structure and builds
+#  a flat list of term dicts. Each term captures one congress session that
+#  the representative served in, including chamber, party, state, and dates.
+#
+#  @param d  dict - the "data" object from a Bioguide API response
+#  @return   list - sorted list of term dicts, each containing:
+#                   congress, chamber, district, state, party, start, departure
 def terms_from_jobpositions(d: dict) -> list:
     terms = []
     for jp in (d.get("jobPositions") or []):
@@ -173,29 +254,46 @@ def terms_from_jobpositions(d: dict) -> list:
             affs = [jp["congressAffiliation"]]
         for ca in affs:
             cong = ca.get("congress") or {}
-            rep  = ca.get("represents") or {}
+            rep = ca.get("represents") or {}
             terms.append({
-                "congress":  cong.get("congressNumber"),
-                "chamber":   chamber,
-                "district":  rep.get("regionType"),
-                "state":     rep.get("regionCode") or None,
-                "party":     party_from_affils(ca),
-                "start":     cong.get("startDate"),
+                "congress": cong.get("congressNumber"),
+                "chamber": chamber,
+                "district": rep.get("regionType"),
+                "state": rep.get("regionCode") or None,
+                "party": party_from_affils(ca),
+                "start": cong.get("startDate"),
                 "departure": cong.get("endDate"),
             })
+
+    # Remove terms with no congress number and no dates (unusable records)
     terms = [t for t in terms if t["congress"] is not None or t["start"] or t["departure"]]
     terms.sort(key=lambda t: (t["start"] or "0000-00-00", t["congress"] or 0))
     return terms
 
 
-def build_name(d: dict) -> str | None:
-    given  = (d.get("givenName")      or "").strip()
-    family = (d.get("familyName")     or "").strip()
+## Builds a display name from a representative's name components.
+#
+#  Combines givenName, familyName, and middleName/additionalName fields.
+#  Falls back to displayName if individual components are missing.
+#
+#  @param d  dict - the "data" object from a Bioguide API response
+#  @return   Optional[str] - full display name, or None if unavailable
+def build_name(d: dict) -> Optional[str]:
+    given = (d.get("givenName") or "").strip()
+    family = (d.get("familyName") or "").strip()
     middle = (d.get("middleName") or d.get("additionalName") or "").strip()
-    parts  = [p for p in [given, family, middle] if p]
+    parts = [p for p in [given, family, middle] if p]
     return " ".join(parts) or (d.get("displayName") or None)
 
 
+## Resolves the representative's photo URL from the assets field.
+#
+#  Falls back to a placeholder image if no photo URL is found in the
+#  API response. Handles relative URLs by constructing the full photo path.
+#
+#  @param d  dict - the "data" object from a Bioguide API response
+#  @param b  str  - bioguide ID used to construct the fallback photo URL
+#  @return   str  - absolute URL to the representative's photo
 def image_url_from_assets(d: dict, b: str = None) -> str:
     placeholder = "https://bioguide.congress.gov/assets/placeholder_square.png"
     imgs = d.get("image") or []
@@ -210,62 +308,87 @@ def image_url_from_assets(d: dict, b: str = None) -> str:
     return placeholder
 
 
+## Assembles a complete DynamoDB-ready record from a Bioguide API response.
+#
+#  @param b     str  - bioguide ID (e.g. "L000603")
+#  @param data  dict - full parsed JSON response from the Bioguide API
+#  @return      dict - flat record ready for DynamoDB PutItem, containing:
+#                      bioguideId, image, name, birth, death, Bio, terms,
+#                      updateDate, url
 def build_record(b: str, data: dict) -> dict:
     d = data.get("data") or {}
     return {
         "bioguideId": b,
-        "image":      image_url_from_assets(d, b),
-        "name":       build_name(d),
-        "birth":      d.get("birthDate"),
-        "death":      d.get("deathDate") or None,
-        "Bio":        (d.get("profileText") or d.get("biographyText") or
-                       d.get("profile") or None),
-        "terms":      terms_from_jobpositions(d),
+        "image": image_url_from_assets(d, b),
+        "name": build_name(d),
+        "birth": d.get("birthDate"),
+        "death": d.get("deathDate") or None,
+        "Bio": (
+            d.get("profileText") or d.get("biographyText") or
+            d.get("profile") or None
+        ),
+        "terms": terms_from_jobpositions(d),
         "updateDate": now_et_string(),
-        "url":        f"https://bioguide.congress.gov/search/bio/{b}",
+        "url": f"https://bioguide.congress.gov/search/bio/{b}",
     }
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Scanner
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
-def scan_letter(L, args, page, table):
-    saved            = 0
-    last_hit         = 0
+## Scans all bioguide IDs for a single letter prefix and saves to DynamoDB.
+#
+#  Iterates over numeric suffixes starting from args.start, stopping either
+#  when the cap is reached or when stop_after_misses consecutive non-OK
+#  responses are seen beyond the last successful hit.
+#
+#  Sparse letters (X, Q, U, Y) use a lower cap and shorter timeouts since
+#  very few historical members have IDs starting with those letters.
+#
+#  @param L     str            - single uppercase letter to scan (e.g. "A")
+#  @param args  argparse.Namespace - parsed CLI arguments
+#  @param page  Playwright Page    - active browser page instance
+#  @param table boto3 Table        - DynamoDB table resource for writing
+#  @return      int                - number of records successfully saved
+def scan_letter(L: str, args: any, page: any, table: any) -> int:
+    saved = 0
+    last_hit = 0
     misses_since_hit = 0
-    NONOK            = {"notfound", "blocked", "error"}
-    n                = max(1, args.start)
+    NONOK = {"notfound", "blocked", "error"}
+    n = max(1, args.start)
 
     # Letters with very few historical members — stop early if no hits
-    SPARSE_LETTERS   = {"X", "Q", "U", "Y"}
-    sparse_cap       = 500 if L in SPARSE_LETTERS else args.cap
+    SPARSE_LETTERS = {"X", "Q", "U", "Y"}
+    sparse_cap = 500 if L in SPARSE_LETTERS else args.cap
 
     with table.batch_writer() as writer:
         while n <= sparse_cap:
-            b       = bid(L, n)
+            b = bid(L, n)
 
-            # Short timeout for sparse letters to avoid getting stuck
             fetch_timeout = 15000 if L in SPARSE_LETTERS else 30000
-            st, js  = fetch_bioguide(page, b, timeout=fetch_timeout)
+            st, js = fetch_bioguide(page, b, timeout=fetch_timeout)
 
             if st == "ok":
-                rec              = build_record(b, js)
-                saved           += 1
-                last_hit         = n
+                rec = build_record(b, js)
+                saved += 1
+                last_hit = n
                 misses_since_hit = 0
                 writer.put_item(Item=to_dynamo(rec))
-                print(f"  [{b}] ✓ saved={saved} | {rec.get('name')} | terms={len(rec['terms'])}")
+                print(f"  [{b}] saved={saved} | {rec.get('name')} | terms={len(rec['terms'])}")
 
             elif st in NONOK:
                 if last_hit > 0:
                     misses_since_hit += 1
                     print(f"  [{b}] {st} | misses_since_hit={misses_since_hit}")
                     if misses_since_hit >= args.stop_after_misses:
-                        print(f"  [{L}] stopping after {misses_since_hit} misses beyond last hit {last_hit:06d}")
+                        print(
+                            f"  [{L}] stopping after {misses_since_hit} misses "
+                            f"beyond last hit {last_hit:06d}"
+                        )
                         break
                 else:
-                    # No hits yet — stop earlier for sparse letters
+                    # No hits yet - stop earlier for sparse letters
                     early_stop = 100 if L in SPARSE_LETTERS else 2500
                     if n - args.start > early_stop:
                         print(f"  [{L}] no hits through {n:06d}, stopping early")
@@ -277,33 +400,48 @@ def scan_letter(L, args, page, table):
     return saved
 
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Main
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
-def main():
+## Entry point — parses CLI arguments and runs the full ingestion pipeline.
+#
+#  Launches a Playwright browser, warms up session cookies by visiting the
+#  Bioguide home page, then scans each requested letter prefix sequentially.
+#  All records are written to the specified DynamoDB table.
+#
+#  CLI arguments:
+#    --letters           str   - letters or ranges e.g. "A-Z" or "A,B,C"
+#    --start             int   - starting numeric suffix (default 1)
+#    --cap               int   - maximum numeric suffix to try (default 999999)
+#    --sleep             float - min and max sleep seconds between requests
+#    --table             str   - DynamoDB table name (required)
+#    --region            str   - AWS region (default us-east-2)
+#    --stop-after-misses int   - stop after N consecutive misses (default 3)
+#    --headless                - run browser without visible window
+def main() -> None:
     ap = argparse.ArgumentParser(
         description="Collect Bioguide records using Playwright and save to DynamoDB."
     )
-    ap.add_argument("--letters",           default="A",
+    ap.add_argument("--letters", default="A",
                     help="Letters or ranges e.g. 'A-Z' or 'A,B,C'")
-    ap.add_argument("--start",             type=int,   default=1)
-    ap.add_argument("--cap",               type=int,   default=999_999)
-    ap.add_argument("--sleep",             nargs=2,    type=float,
-                    default=[2, 5],        metavar=("MIN", "MAX"))
-    ap.add_argument("--table",             required=True,
+    ap.add_argument("--start", type=int, default=1)
+    ap.add_argument("--cap", type=int, default=999_999)
+    ap.add_argument("--sleep", nargs=2, type=float,
+                    default=[2, 5], metavar=("MIN", "MAX"))
+    ap.add_argument("--table", required=True,
                     help="DynamoDB table name")
-    ap.add_argument("--region",            default="us-east-2")
-    ap.add_argument("--stop-after-misses", type=int,   default=3,
+    ap.add_argument("--region", default="us-east-2")
+    ap.add_argument("--stop-after-misses", type=int, default=3,
                     help="Stop after N consecutive misses beyond last hit")
-    ap.add_argument("--headless",          action="store_true",
+    ap.add_argument("--headless", action="store_true",
                     help="Run browser in headless mode (no visible window)")
     args = ap.parse_args()
 
-    # Parse letters
+    # Parse letter specification into an ordered list of unique letters
     spec = (args.letters or "").upper().replace(" ", "")
     letters = []
-    seen = set()
+    seen: set = set()
     for part in spec.split(","):
         if not part:
             continue
@@ -322,23 +460,23 @@ def main():
     letters = letters or ["A"]
     print(f"Letters: {''.join(letters)}")
 
-    # DynamoDB
-    ddb   = boto3.resource("dynamodb", region_name=args.region)
+    ddb = boto3.resource("dynamodb", region_name=args.region)
     table = ddb.Table(args.table)
-
     total_saved = 0
 
     with sync_playwright() as p:
-        # Launch real Chrome browser
+        # Launch real Chrome browser to bypass Cloudflare bot detection
         browser = p.chromium.launch(headless=args.headless)
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+            ),
             locale="en-US",
         )
         page = context.new_page()
 
-        # Warmup — visit home page to get cookies
+        # Warmup - visit home page to obtain session cookies before scraping
         print("Warming up browser...")
         page.goto(HOME, timeout=30000, wait_until="domcontentloaded")
         jsleep(2, 4)
@@ -346,7 +484,7 @@ def main():
 
         for L in letters:
             print(f"\n=== Scanning letter {L} ===")
-            saved        = scan_letter(L, args, page, table)
+            saved = scan_letter(L, args, page, table)
             total_saved += saved
             print(f"--- {L}: saved {saved} ---")
 
