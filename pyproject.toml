@@ -1,0 +1,38 @@
+[project]
+name = "us-congress-analytics"
+version = "1.0.0"
+description = "US Congressional data pipeline, REST API, and Senate co-sponsorship graph analysis"
+readme = "README.md"
+requires-python = ">=3.12, <3.13"
+keywords = ["congress", "senate", "neo4j", "aws", "graph", "analytics"]
+classifiers = [
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "boto3>=1.34",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
+    "playwright>=1.40",
+    "neo4j>=5.0",
+    "networkx>=3.3",
+    "numpy>=1.26",
+    "scikit-learn>=1.4",
+    "flask>=3.0",
+    "flask-cors>=4.0",
+    "flake8>=7.0",
+    "pytest>=8.0",
+    "moto[dynamodb]>=5.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["api*", "ingestion*", "senator_graph*", "tests*"]
+
+[tool.flake8]
+max-line-length = 100
+exclude = [
+    "__pycache__",
+    ".venv",
+    "venv",
+    "senator_graph/lib",
+]
