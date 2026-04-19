@@ -6,3 +6,4 @@ venv/
 node_modules/ 
 *.html 
 us_congress_analytics.egg-info/ 
+us_congress_analytics.egg-info/ 
