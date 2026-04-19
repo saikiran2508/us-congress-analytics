@@ -6,9 +6,9 @@
 #  full 12,310-record Reps table.
 #
 #  Key data structures:
-#    - rep:   dict - a single Reps table record with a "terms" list
-#    - term:  dict - one congress term with congress, chamber, bioguideId
-#    - combo_key: str - "119#Senate" deduplication key per rep per congress
+#    - rep:       dict - a single Reps table record with a "terms" list
+#    - term:      dict - one congress term with congress, chamber, bioguideId
+#    - combo_key: str  - "119#Senate" deduplication key per rep per congress
 #
 #  Run this script once after clearing the RepTerms table, or whenever
 #  the Reps table has been significantly updated.
@@ -16,30 +16,48 @@
 #  Usage:
 #    python populate_repterms.py
 
+import os
 import uuid
 from typing import Optional
 
 import boto3
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ---------------------------------------------------------------------------
+# Config — loaded from .env
+# ---------------------------------------------------------------------------
+
+## AWS region for DynamoDB — loaded from AWS_REGION env variable.
+AWS_REGION = os.getenv("AWS_REGION", "us-east-2")
+
+## Source table name — loaded from REPS_TABLE env variable.
+REPS_TABLE_NAME = os.getenv("REPS_TABLE", "Reps")
+
+## Target table name — loaded from TERMS_TABLE env variable.
+TERMS_TABLE_NAME = os.getenv("TERMS_TABLE", "RepTerms")
 
 # ---------------------------------------------------------------------------
 # DynamoDB table handles
 # ---------------------------------------------------------------------------
 
-## Shared DynamoDB resource for us-east-2.
-dynamodb = boto3.resource("dynamodb", region_name="us-east-2")
+## Shared DynamoDB resource.
+dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
 
 ## Source table — contains full representative biographical records.
-reps_table = dynamodb.Table("Reps")
+reps_table = dynamodb.Table(REPS_TABLE_NAME)
 
 ## Target table — one record per congress term per representative.
-terms_table = dynamodb.Table("RepTerms")
+terms_table = dynamodb.Table(TERMS_TABLE_NAME)
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 ## Set of canonical chamber names that are valid for the RepTerms table.
-#  All other chamber variants (Delegate, Resident Commissioner, etc.) are filtered out.
+#  All other chamber variants (Delegate, Resident Commissioner, etc.) are
+#  filtered out.
 VALID_CHAMBERS = {"Senate", "House"}
 
 
@@ -114,7 +132,7 @@ def clear_table() -> None:
 #    2. Scan all 12,310 Reps records
 #    3. For each rep, walk their terms list
 #    4. Normalize and validate the chamber name
-#    5. Deduplicate by congress + chamber per rep (a rep may have duplicate terms)
+#    5. Deduplicate by congress + chamber per rep
 #    6. Write one RepTerms record per unique congress + chamber combination
 #
 #  Prints a summary of inserted records, skipped reps, errors, and the

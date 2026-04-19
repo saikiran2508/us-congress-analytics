@@ -25,6 +25,9 @@ from typing import Optional, Iterator
 
 import requests
 import boto3
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Config
@@ -397,7 +400,7 @@ def image_from_member(m: dict) -> str:
 #  CLI arguments:
 #    --congress  int   - congress number to ingest (default 119)
 #    --table     str   - DynamoDB table name (required)
-#    --region    str   - AWS region (default us-east-2)
+#    --region    str   - AWS region (default from AWS_REGION env var)
 #    --limit     int   - API page size, max 250 (default 250)
 #    --total     int   - max members to process, 0 = all (default 545)
 #    --dry-run         - preview changes without writing to DynamoDB
@@ -411,7 +414,7 @@ def main() -> None:
     )
     ap.add_argument("--congress", type=int, default=119)
     ap.add_argument("--table", required=True, help="DynamoDB table name")
-    ap.add_argument("--region", default="us-east-2")
+    ap.add_argument("--region", default=os.getenv("AWS_REGION", "us-east-2"))
     ap.add_argument("--limit", type=int, default=250)
     ap.add_argument("--total", type=int, default=545,
                     help="Max members to process. 0 = all.")
@@ -484,7 +487,8 @@ def main() -> None:
         if args.dry_run:
             print(f"\n{'=' * 60}")
             print(f"[{total + 1}] {bioguide} - {new_name}")
-            print(f"  birth: {existing.get('birth')} -> {updates.get('birth', '(keep)')}")
+            print(f"  birth: {existing.get('birth')} -> "
+                  f"{updates.get('birth', '(keep)')}")
             print(f"  Bio:   {'yes' if existing.get('Bio') else 'missing'} -> "
                   f"{'found' if updates.get('Bio') else '(still missing)'}")
             print(f"  Terms: {len(new_terms)}")
@@ -493,7 +497,8 @@ def main() -> None:
             if existing:
                 update_missing_fields(table, bioguide, updates)
                 updated += 1
-                print(f"Updated {bioguide} (total={total + 1}) | {list(updates.keys())}")
+                print(f"Updated {bioguide} (total={total + 1}) | "
+                      f"{list(updates.keys())}")
             else:
                 item = {
                     "bioguideId": bioguide,
@@ -523,7 +528,7 @@ def main() -> None:
     if args.dry_run:
         with open(args.out, "w", encoding="utf-8") as f:
             json.dump(all_items, f, indent=2, default=str)
-        print("DRY RUN - nothing will be written to DynamoDB\n")
+        print("DRY RUN complete - nothing was written to DynamoDB")
         print(f"Saved to: {args.out}")
     else:
         print("\nIngest complete:")
