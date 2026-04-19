@@ -95,7 +95,7 @@ NEO4J_PASSWORD=your_password
 
 There are four data collection scripts. Run them in this order:
 
-### Step 1 — Scrape Bioguide member bios
+### Step 1 - Scrape Bioguide member bios
 
 Scrapes the [Bioguide website](https://bioguide.congress.gov) using Playwright
 to collect biographical data for all historical US representatives. Stores
@@ -115,7 +115,7 @@ python ingestion/bioguide_members.py --letters A-Z --table Reps --region us-east
 | `--headless` | false | Run browser without visible window |
 | `--stop-after-misses` | 3 | Stop after N consecutive misses |
 
-### Step 2 — Fetch current members from Congress.gov API
+### Step 2 - Fetch current members from Congress.gov API
 
 Fetches current members for a given congress from the Congress.gov API and
 updates missing fields in the `Reps` table. Never overwrites existing data.
@@ -136,7 +136,7 @@ python ingestion/current_reps_ingestion.py --congress 119 --table Reps --dry-run
 | `--total` | 545 | Max members to process, 0 = all |
 | `--dry-run` | false | Preview without writing to DynamoDB |
 
-### Step 3 — Populate RepTerms table
+### Step 3 - Populate RepTerms table
 
 Reads all records from the `Reps` table and creates one record per congress
 term per representative in the `RepTerms` table. This enables fast map queries
@@ -146,7 +146,7 @@ that run in under 1 second instead of 7 seconds.
 python ingestion/populate_repterms.py
 ```
 
-### Step 4 — Fetch Senate bills
+### Step 4 - Fetch Senate bills
 
 Fetches Senate bills from the Congress.gov API into the `bills` DynamoDB table.
 Supports incremental updates — only fetches bills newer than the last run.
@@ -184,13 +184,13 @@ python -m pytest tests/test_ingestion.py -v
 
 ---
 
-## 3. Model Training — Senate Co-sponsorship Graph
+## 3. Model Training - Senate Co-sponsorship Graph
 
 Builds a weighted graph where each node is a senator and each edge represents
 the number of bills they co-sponsored together. Runs community detection
 algorithms to identify clusters of senators with shared policy interests.
 
-### Step 1 — Build the co-sponsorship graph
+### Step 1 - Build the co-sponsorship graph
 
 Fetches bill and co-sponsorship data and builds a NetworkX weighted graph:
 
@@ -198,7 +198,7 @@ Fetches bill and co-sponsorship data and builds a NetworkX weighted graph:
 python senator_graph/build_graph.py
 ```
 
-### Step 2 — Load graph into Neo4j
+### Step 2 - Load graph into Neo4j
 
 Loads the graph nodes and edges into Neo4j AuraDB:
 
@@ -206,7 +206,7 @@ Loads the graph nodes and edges into Neo4j AuraDB:
 python senator_graph/load_neo4j.py
 ```
 
-### Step 3 — Run community detection
+### Step 3 - Run community detection
 
 Runs Louvain, Label Propagation, Spectral Clustering, and Greedy Modularity
 algorithms and saves all results for comparison:
@@ -215,7 +215,7 @@ algorithms and saves all results for comparison:
 python senator_graph/run_clustering_v2.py
 ```
 
-### Step 4 — Identify and label clusters
+### Step 4 - Identify and label clusters
 
 ```bash
 python senator_graph/identify_clusters.py
@@ -265,7 +265,7 @@ python senator_graph/analyze_clusters.py --algo louvain_res0.5 --cross-party
 
 ---
 
-## 5. Results Postprocessing / Visualization — REST API
+## 5. Results Postprocessing / Visualization - REST API
 
 The REST API exposes the processed congressional data stored in DynamoDB
 for consumption by the frontend map application.
@@ -325,8 +325,8 @@ connections using moto for DynamoDB mocking.
 ## CI/CD
 
 GitHub Actions runs automatically on every push:
-- **Flake8** — enforces code style on pushes to `main`
-- **Pytest** — runs full test suite on every branch
+- **Flake8** - enforces code style on pushes to `main`
+- **Pytest** - runs full test suite on every branch
 
 ---
 
