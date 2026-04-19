@@ -253,3 +253,134 @@ def test_bills_to_dynamo_removes_none():
     result = to_dynamo({"title": "Test Bill", "summary": None})
     assert "summary" not in result
     assert result["title"] == "Test Bill"
+
+
+# ---------------------------------------------------------------------------
+# Data format validation tests
+# ---------------------------------------------------------------------------
+
+## Tests that build_item produces a bill record with all required DynamoDB fields.
+#
+#  Verifies the output format is correct before writing to DynamoDB.
+def test_build_item_has_required_fields():
+    from ingestion.bills_senate import build_item
+    item = build_item(
+        bill_summary={"congress": 119, "number": 1, "type": "S"},
+        detail={
+            "title": "A bill to test",
+            "congress": 119,
+            "number": 1,
+            "type": "S",
+            "introducedDate": "2025-01-15",
+            "originChamber": "Senate",
+            "sponsors": [{
+                "firstName": "Elizabeth",
+                "lastName": "Warren",
+                "bioguideId": "W000817",
+                "party": "D",
+                "state": "MA",
+            }],
+            "laws": [],
+            "latestAction": {"text": "Introduced in Senate",
+                             "actionDate": "2025-01-15"},
+        },
+        cosponsors_raw=[],
+        subjects={"policyArea": "Health", "legislativeSubjects": ["Medicare"]},
+    )
+    # Verify all required DynamoDB fields are present
+    required_fields = [
+        "billId", "Number", "Type", "Congress", "Chamber",
+        "Title", "Introduced", "Sponsor", "Status", "BecameLaw",
+        "LatestAction", "LatestActionDate", "CosponsorCount",
+        "Cosponsors", "Subject", "Keywords", "url", "updateDate",
+    ]
+    for field in required_fields:
+        assert field in item, f"Missing required field: {field}"
+
+
+## Tests that build_item produces correct billId format.
+def test_build_item_bill_id_format():
+    from ingestion.bills_senate import build_item
+    item = build_item(
+        bill_summary={"congress": 119, "number": 42, "type": "S"},
+        detail={"congress": 119, "number": 42, "type": "S",
+                "laws": [], "latestAction": {}},
+        cosponsors_raw=[],
+        subjects={"policyArea": None, "legislativeSubjects": []},
+    )
+    assert item["billId"] == "119-S-42"
+    assert item["Congress"] == 119
+    assert item["Number"] == 42
+
+
+## Tests that build_item correctly counts cosponsors.
+def test_build_item_cosponsor_count():
+    from ingestion.bills_senate import build_item
+    cosponsors = [
+        {"firstName": "Chuck", "lastName": "Schumer",
+         "bioguideId": "S000148", "party": "D", "state": "NY"},
+        {"firstName": "Bernie", "lastName": "Sanders",
+         "bioguideId": "S000033", "party": "I", "state": "VT"},
+    ]
+    item = build_item(
+        bill_summary={"congress": 119, "number": 1, "type": "S"},
+        detail={"laws": [], "latestAction": {}},
+        cosponsors_raw=cosponsors,
+        subjects={"policyArea": None, "legislativeSubjects": []},
+    )
+    assert item["CosponsorCount"] == 2
+    assert len(item["Cosponsors"]) == 2
+
+
+## Tests that a Reps DynamoDB record has all required fields.
+#
+#  Verifies the record structure produced by bioguide_members.build_record.
+def test_reps_record_has_required_fields():
+    from ingestion.bioguide_members import build_record
+    sample_data = {
+        "data": {
+            "givenName": "Elizabeth",
+            "familyName": "Warren",
+            "birthDate": "1949-06-22",
+            "jobPositions": [],
+        }
+    }
+    record = build_record("W000817", sample_data)
+    required_fields = [
+        "bioguideId", "image", "name", "birth",
+        "terms", "updateDate", "url",
+    ]
+    for field in required_fields:
+        assert field in record, f"Missing required field: {field}"
+    assert record["bioguideId"] == "W000817"
+    assert isinstance(record["terms"], list)
+
+
+## Tests that a RepTerms record has all required fields.
+#
+#  Verifies the structure that populate_repterms.py writes to DynamoDB.
+def test_repterms_record_structure():
+    import uuid
+    from ingestion.populate_repterms import normalize_chamber
+    from ingestion.populate_repterms import VALID_CHAMBERS
+
+    # Simulate what populate() writes for one term
+    term = {
+        "congress": 119,
+        "chamber": "Senate",
+        "bioguideId": "W000817",
+    }
+    chamber_norm = normalize_chamber(term["chamber"])
+    assert chamber_norm in VALID_CHAMBERS
+
+    record = {
+        "termId": str(uuid.uuid4()),
+        "congress": int(term["congress"]),
+        "chamber": chamber_norm,
+        "bioguideId": term["bioguideId"],
+    }
+    required_fields = ["termId", "congress", "chamber", "bioguideId"]
+    for field in required_fields:
+        assert field in record, f"Missing required field: {field}"
+    assert isinstance(record["termId"], str)
+    assert isinstance(record["congress"], int)

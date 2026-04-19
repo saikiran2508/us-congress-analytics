@@ -229,3 +229,115 @@ def test_get_best_result_empty():
     from senator_graph.identify_clusters import get_best_result
     result = get_best_result({})
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Data format validation tests
+# ---------------------------------------------------------------------------
+
+## Tests that graph nodes have all required attributes after construction.
+#
+#  Verifies the node attribute format is correct before loading into Neo4j.
+def test_graph_nodes_have_required_attributes():
+    from senator_graph.build_graph import build_cosponsorship_graph
+    bills = [
+        {
+            "billId": "119-S-1",
+            "Sponsor": {"bioguideId": "W000817", "name": "Warren",
+                        "party": "Democrat", "state": "MA"},
+            "Cosponsors": [
+                {"bioguideId": "S000148", "name": "Schumer",
+                 "party": "Democrat", "state": "NY"},
+            ],
+        }
+    ]
+    G, senator_meta, senator_bills = build_cosponsorship_graph(bills)
+
+    # Every node must have name, party, state, bill_count attributes
+    required_attrs = ["name", "party", "state", "bill_count"]
+    for node_id, attrs in G.nodes(data=True):
+        for attr in required_attrs:
+            assert attr in attrs, f"Node {node_id} missing attribute: {attr}"
+
+
+## Tests that graph edges have required weight attributes.
+#
+#  Verifies edge attributes are correct before loading into Neo4j.
+def test_graph_edges_have_required_attributes():
+    from senator_graph.build_graph import build_cosponsorship_graph
+    bills = [
+        {
+            "billId": "119-S-1",
+            "Sponsor": {"bioguideId": "W000817", "name": "Warren",
+                        "party": "Democrat", "state": "MA"},
+            "Cosponsors": [
+                {"bioguideId": "S000148", "name": "Schumer",
+                 "party": "Democrat", "state": "NY"},
+            ],
+        }
+    ]
+    G, _, _ = build_cosponsorship_graph(bills)
+
+    # Every edge must have weight and raw_count
+    for u, v, attrs in G.edges(data=True):
+        assert "weight" in attrs, f"Edge {u}-{v} missing weight"
+        assert "raw_count" in attrs, f"Edge {u}-{v} missing raw_count"
+        assert attrs["weight"] > 0
+        assert attrs["raw_count"] > 0
+
+
+## Tests that build_result produces correctly structured clustering output.
+#
+#  Verifies the JSON format written to cluster_results_v2.json is correct.
+def test_build_result_structure():
+    from senator_graph.run_clustering_v2 import build_result
+
+    G = nx.Graph()
+    G.add_node("W000817", name="Warren", party="Democrat",
+               state="MA", bill_count=100)
+    G.add_node("S000148", name="Schumer", party="Democrat",
+               state="NY", bill_count=80)
+    G.add_edge("W000817", "S000148", weight=0.5, raw_count=10)
+
+    communities = [{"W000817", "S000148"}]
+    result = build_result(G, "test_algo", communities, 0.35)
+
+    # Verify required top-level keys
+    required_keys = [
+        "algorithm", "modularity", "num_communities",
+        "senators", "community_summary"
+    ]
+    for key in required_keys:
+        assert key in result, f"Missing key: {key}"
+
+    # Verify senator records have required fields
+    for senator in result["senators"]:
+        required_senator_fields = [
+            "bioguideId", "name", "party", "state",
+            "bill_count", "community_id"
+        ]
+        for field in required_senator_fields:
+            assert field in senator, f"Senator missing field: {field}"
+
+
+## Tests that community_summary records have required fields.
+def test_community_summary_structure():
+    from senator_graph.run_clustering_v2 import community_party_breakdown
+
+    G = nx.Graph()
+    G.add_node("W000817", party="Democrat", name="Warren",
+               state="MA", bill_count=100)
+    G.add_node("S000148", party="Democrat", name="Schumer",
+               state="NY", bill_count=80)
+    G.add_edge("W000817", "S000148", weight=0.5)
+
+    communities = [{"W000817", "S000148"}]
+    breakdown = community_party_breakdown(G, communities)
+
+    required_fields = [
+        "community_id", "size", "party_breakdown",
+        "dominant_party", "dominant_pct", "bipartisan"
+    ]
+    for record in breakdown:
+        for field in required_fields:
+            assert field in record, f"Community summary missing field: {field}"
