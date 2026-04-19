@@ -25,7 +25,10 @@ us-congress-analytics/
 │   ├── run_clustering_v2.py        # Executes clustering pipeline
 │   ├── analyze_clusters.py         # Analyzes cluster results
 │   └── visualize_interactive_v5.py # Generates interactive HTML visualization
-├── tests/                          # Pytest test suite
+├── tests/                          # Pytest test suite (75 tests)
+│   ├── test_api.py                 # REST API route and helper tests
+│   ├── test_ingestion.py           # Data ingestion and format validation tests
+│   └── test_senator_graph.py       # Graph construction and clustering tests
 ├── .github/workflows/              # GitHub Actions CI/CD
 ├── requirements.txt                # Python dependencies
 ├── pyproject.toml                  # Project metadata
@@ -172,7 +175,8 @@ python ingestion/bills_senate.py --congress 119 --table bills \
 
 ### Data verification test
 
-Verifies that the data format is correct before running the graph pipeline:
+Verifies that data records have all required fields and correct format
+before running the graph pipeline:
 
 ```bash
 python -m pytest tests/test_ingestion.py -v
@@ -204,8 +208,8 @@ python senator_graph/load_neo4j.py
 
 ### Step 3 — Run community detection
 
-Runs Louvain, Girvan-Newman, and Label Propagation algorithms and compares
-their community assignments:
+Runs Louvain, Label Propagation, Spectral Clustering, and Greedy Modularity
+algorithms and saves all results for comparison:
 
 ```bash
 python senator_graph/run_clustering_v2.py
@@ -219,7 +223,7 @@ python senator_graph/identify_clusters.py
 
 ### Model verification test
 
-Verifies the graph structure and clustering output format:
+Verifies graph node/edge attributes and clustering output format:
 
 ```bash
 python -m pytest tests/test_senator_graph.py -v
@@ -238,25 +242,25 @@ Nodes are colored by community cluster and sized by number of connections.
 python senator_graph/visualize_interactive_v5.py
 ```
 
-This generates `senate_graph_interactive.html` which opens in any browser.
-Features:
+This generates `senate_graph_v5.html` which opens in any browser. Features:
 - Click nodes to see senator details (name, state, party, cluster)
-- Filter senators by party or cluster
+- Click legend items to highlight a single community
+- Hover tooltips on nodes and edges
 - Zoom and pan the network
 
 ### Cluster analysis
 
-Prints a summary of each detected community including top senators, dominant
-party, and most common policy areas:
+Prints a detailed breakdown of each community including top senators,
+dominant party, alignment score, and bipartisan connectors:
 
 ```bash
 python senator_graph/analyze_clusters.py
-```
 
-### Visualization verification test
+# Report for a specific algorithm only
+python senator_graph/analyze_clusters.py --algo louvain_res0.5
 
-```bash
-python -m pytest tests/test_visualization.py -v
+# Include cross-party analysis
+python senator_graph/analyze_clusters.py --algo louvain_res0.5 --cross-party
 ```
 
 ---
@@ -311,6 +315,10 @@ python -m pytest tests/test_api.py -v
 ```bash
 python -m pytest tests/ -v --durations=0
 ```
+
+75 tests covering API routes, data format validation, graph construction,
+and clustering output format. All tests run without real AWS or Neo4j
+connections using moto for DynamoDB mocking.
 
 ---
 
